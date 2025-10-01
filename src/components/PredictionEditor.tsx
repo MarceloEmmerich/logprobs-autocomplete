@@ -12,12 +12,15 @@ export const PredictionEditor = ({ apiKey }: PredictionEditorProps) => {
   const [prediction, setPrediction] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [confidence, setConfidence] = useState<number | null>(null);
+  const [alternatives, setAlternatives] = useState<Array<{ word: string; confidence: number }>>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const getPrediction = async (currentText: string) => {
     if (!currentText.trim()) {
       setPrediction("");
       setConfidence(null);
+      setAlternatives([]);
       return;
     }
 
@@ -56,16 +59,28 @@ export const PredictionEditor = ({ apiKey }: PredictionEditorProps) => {
       const logprobs = data.choices[0]?.logprobs?.content?.[0];
 
       if (content && logprobs) {
-        // Convert logprob to probability (e^logprob)
+        // Main prediction
         const prob = Math.exp(logprobs.logprob) * 100;
         setPrediction(content);
         setConfidence(Math.round(prob));
+
+        // Get alternative predictions from top_logprobs
+        const alts = logprobs.top_logprobs
+          ?.slice(1, 4) // Get up to 3 alternatives (excluding the first which is the main prediction)
+          .map((item: any) => ({
+            word: item.token.trim(),
+            confidence: Math.round(Math.exp(item.logprob) * 100)
+          }))
+          .filter((alt: any) => alt.word) || [];
+        
+        setAlternatives(alts);
       }
     } catch (error) {
       console.error("Prediction error:", error);
       toast.error("Failed to get prediction. Check your API key.");
       setPrediction("");
       setConfidence(null);
+      setAlternatives([]);
     } finally {
       setIsLoading(false);
     }
@@ -75,16 +90,11 @@ export const PredictionEditor = ({ apiKey }: PredictionEditorProps) => {
     // Accept prediction with Tab
     if (e.key === "Tab" && prediction) {
       e.preventDefault();
-      const newText = text + prediction + " ";
+      const newText = text + prediction;
       setText(newText);
       setPrediction("");
       setConfidence(null);
-    }
-    // Trigger prediction on Space
-    else if (e.key === " " && text.trim()) {
-      const newText = text + " ";
-      setText(newText);
-      getPrediction(newText);
+      setAlternatives([]);
     }
   };
 
@@ -92,10 +102,21 @@ export const PredictionEditor = ({ apiKey }: PredictionEditorProps) => {
     const newText = e.target.value;
     setText(newText);
     
-    // Clear prediction if user is typing over it
-    if (prediction && !newText.endsWith(" ")) {
-      setPrediction("");
-      setConfidence(null);
+    // Clear prediction if user is typing
+    setPrediction("");
+    setConfidence(null);
+    setAlternatives([]);
+
+    // Clear existing timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    // Set new timer for prediction
+    if (newText.trim()) {
+      debounceTimerRef.current = setTimeout(() => {
+        getPrediction(newText);
+      }, 500); // 500ms delay after user stops typing
     }
   };
 
@@ -130,26 +151,37 @@ export const PredictionEditor = ({ apiKey }: PredictionEditorProps) => {
             
             {prediction && (
               <div className="absolute bottom-4 left-4 right-4 pointer-events-none">
-                <span className="inline-block px-3 py-1.5 bg-[hsl(var(--prediction-bg))] text-[hsl(var(--prediction-text))] rounded-md text-sm font-mono animate-in fade-in slide-in-from-bottom-2 duration-300">
-                  {prediction}
-                  {confidence !== null && (
-                    <span className="ml-2 text-xs opacity-70">
-                      ({confidence}%)
+                <div className="space-y-2">
+                  <span className="inline-block px-3 py-1.5 bg-[hsl(var(--prediction-bg))] text-[hsl(var(--prediction-text))] rounded-md text-sm font-mono animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    {prediction}
+                    {confidence !== null && (
+                      <span className="ml-2 text-xs opacity-70">
+                        ({confidence}%)
+                      </span>
+                    )}
+                    <span className="ml-2 text-xs opacity-50">
+                      [Tab to accept]
                     </span>
-                  )}
-                  <span className="ml-2 text-xs opacity-50">
-                    [Tab to accept]
                   </span>
-                </span>
+                  {alternatives.length > 0 && (
+                    <div className="flex gap-2 flex-wrap">
+                      {alternatives.map((alt, idx) => (
+                        <span 
+                          key={idx}
+                          className="inline-block px-2 py-1 bg-secondary/50 text-secondary-foreground rounded text-xs font-mono animate-in fade-in slide-in-from-bottom-2 duration-300"
+                          style={{ animationDelay: `${(idx + 1) * 50}ms` }}
+                        >
+                          {alt.word} ({alt.confidence}%)
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
 
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <kbd className="px-2 py-1 bg-secondary rounded text-secondary-foreground">Space</kbd>
-              <span>Predict next word</span>
-            </div>
             <div className="flex items-center gap-1.5">
               <kbd className="px-2 py-1 bg-secondary rounded text-secondary-foreground">Tab</kbd>
               <span>Accept prediction</span>
@@ -161,10 +193,10 @@ export const PredictionEditor = ({ apiKey }: PredictionEditorProps) => {
       <Card className="p-4 bg-card/30 backdrop-blur-sm border-primary/10">
         <h4 className="text-sm font-medium text-foreground mb-2">How it works</h4>
         <ul className="text-xs text-muted-foreground space-y-1.5">
-          <li>• Type naturally and press space after each word</li>
+          <li>• Type naturally and pause briefly to see predictions</li>
           <li>• The AI analyzes your text using logprobs to predict the next word</li>
-          <li>• Predictions appear below with confidence scores</li>
-          <li>• Press Tab to accept or keep typing to ignore</li>
+          <li>• Main prediction appears with up to 3 alternatives and confidence scores</li>
+          <li>• Press Tab to accept the main prediction or keep typing to ignore</li>
           <li>• Higher confidence % means the AI is more certain about the prediction</li>
         </ul>
       </Card>
